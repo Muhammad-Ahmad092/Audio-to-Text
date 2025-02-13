@@ -1,0 +1,4 @@
+streamlit==1.25.0
+openai-whisper==20230314
+torch>=1.13.1
+numpy>=1.21.6
