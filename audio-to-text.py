@@ -1,18 +1,77 @@
 import streamlit as st
-from whisper import load_model
+import whisper
+import tempfile
 import os
+import shutil
+import requests
+import zipfile
 
-# Load the Whisper model (ensure 'openai-whisper' is installed)
+# Function to download and setup FFmpeg automatically
+def setup_ffmpeg():
+    ffmpeg_dir = os.path.join(os.getcwd(), "ffmpeg_bin")
+    ffmpeg_path = os.path.join(ffmpeg_dir, "ffmpeg.exe")
+
+    if not os.path.exists(ffmpeg_path):
+        st.write("Downloading FFmpeg... ⏳")
+        url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+        zip_path = "ffmpeg.zip"
+
+        with open(zip_path, "wb") as f:
+            f.write(requests.get(url, stream=True).content)
+
+        with zipfile.ZipFile(zip_path, "r") as zip_ref:
+            zip_ref.extractall("ffmpeg_temp")
+
+        extracted_dir = [d for d in os.listdir("ffmpeg_temp") if os.path.isdir(os.path.join("ffmpeg_temp", d))][0]
+        shutil.move(os.path.join("ffmpeg_temp", extracted_dir, "bin"), ffmpeg_dir)
+
+        os.remove(zip_path)
+        shutil.rmtree("ffmpeg_temp")
+        st.write("FFmpeg setup complete ✅")
+
+    return ffmpeg_dir
+
+ffmpeg_dir = setup_ffmpeg()
+os.environ["PATH"] += os.pathsep + ffmpeg_dir
+
 @st.cache_resource
-def load_whisper_model():
-    return load_model("base")  # Replace "base" with "tiny", "medium", etc.
+def load_model():
+    return whisper.load_model("small")
 
-model = load_whisper_model()
+model = load_model()
 
-# Streamlit App Configuration
-st.set_page_config(page_title="Audio-to-Text Converter", layout="centered", page_icon="🎤")
+# Custom CSS for styling
+st.markdown(
+    """
+    <style>
+        body {
+            background-color: #1e1e1e;
+            color: white;
+            font-family: 'Arial', sans-serif;
+        }
+        .stButton>button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 10px 20px;
+            font-size: 16px;
+            margin: 10px 0;
+        }
+        .stButton>button:hover {
+            background-color: #45a049;
+        }
+        .uploaded-file-details {
+            margin-top: 15px;
+            font-size: 14px;
+            color: #ddd;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
-# Frontend - UI Design
+# Streamlit App Layout
 st.title("🎤 Audio-to-Text Converter")
 st.markdown(
     """
@@ -24,7 +83,6 @@ st.markdown(
     - Supports multiple audio formats: `mp3`, `mp4`, `m4a`, `wav`.  
     """
 )
-
 def format_timestamp(seconds):
     """Format a timestamp in seconds to the SRT format: HH:MM:SS,ms."""
     milliseconds = int((seconds % 1) * 1000)
@@ -38,60 +96,27 @@ st.header("📤 Upload Your Audio File")
 uploaded_file = st.file_uploader("Choose an audio file", type=["mp3", "mp4", "m4a", "wav"])
 
 if uploaded_file:
-    # Display file details
-    st.write(f"**Filename**: `{uploaded_file.name}`")
-    file_size = len(uploaded_file.getvalue()) / (1024 * 1024)
-    st.write(f"**File Size**: `{file_size:.2f} MB`")
+    st.audio(uploaded_file, format="audio/mp3")
+    file_size = uploaded_file.size / (1024 * 1024)
+    st.markdown(
+        f"""
+        <div class="uploaded-file-details">
+            <strong>Filename:</strong> {uploaded_file.name} <br>
+            <strong>File Size:</strong> {file_size:.2f} MB
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    # Save uploaded file locally
-    file_path = os.path.join("temp", uploaded_file.name)
-    os.makedirs("temp", exist_ok=True)
-    with open(file_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-
-    st.success("File uploaded successfully! 🎉")
-
-    # Transcription Button
-    if st.button("🎙️ Convert Audio to Text"):
+    if st.button("Convert Audio to Text"):
         with st.spinner("Transcription in progress... This might take a while ⏳"):
-            # Transcribe audio using Whisper
-            result = model.transcribe(file_path)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_audio:
+                temp_audio.write(uploaded_file.read())
+                temp_audio_path = temp_audio.name
 
-            # Extract transcription text and create output files
-            transcription_text = result["text"]
-            text_file_path = os.path.join("temp", "transcription.txt")
-            subtitle_file_path = os.path.join("temp", "transcription.srt")
+            result = model.transcribe(temp_audio_path)
+            os.remove(temp_audio_path)
 
-            # Save transcription to a text file
-            with open(text_file_path, "w", encoding="utf-8") as text_file:
-                text_file.write(transcription_text)
-
-            # Save subtitles (SRT format)
-            with open(subtitle_file_path, "w", encoding="utf-8") as srt_file:
-                for segment in result["segments"]:
-                    start = segment["start"]
-                    end = segment["end"]
-                    text = segment["text"]
-                    srt_file.write(f"{segment['id'] + 1}\n")
-                    srt_file.write(f"{format_timestamp(start)} --> {format_timestamp(end)}\n")
-                    srt_file.write(f"{text}\n\n")
-
-        # Output Section
-        st.success("Transcription complete! ✅")
-        st.balloons()
-
-        # File download section
-        st.subheader("📥 Download Your Files")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.download_button(
-                label="📄 Download Text File",
-                data=open(text_file_path, "r").read(),
-                file_name="transcription.txt",
-            )
-        with col2:
-            st.download_button(
-                label="🎞️ Download Subtitle File",
-                data=open(subtitle_file_path, "r").read(),
-                file_name="transcription.srt",
-            )
+        st.success("Transcription Complete! 🎉")
+        st.subheader("Transcription:")
+        st.write(result["text"])
